@@ -33,46 +33,49 @@ def create_booking(booking: BookingRequest, decoded_token: dict = Depends(verify
 
     new_booking_id = f"DRONE-{str(uuid.uuid4())[:8].upper()}"
     
-    assigned_drone_id = None
+    assigned_pilot_id = None
     eta_mins = None
     initial_status = "pending"
 
     # 🔥 EMERGENCY AUTO-DISPATCH LOGIC
     if booking.serviceType in EMERGENCY_SERVICES:
-        # 1. Get all available drones with a location
-        available_drones = list(db.drones.find({
+        # 1. Get all available pilots with a known location
+        available_pilots = list(db.pilots.find({
             "status": "available", 
             "current_location": {"$ne": None}
         }))
 
-        if available_drones:
-            # 2. Math to find the nearest drone
-            def get_distance(drone):
-                d_lat = drone["current_location"]["lat"]
-                d_lon = drone["current_location"]["lon"]
-                # Basic Pythagorean theorem for quick distance estimation
-                return math.sqrt((d_lat - booking.lat)**2 + (d_lon - booking.lon)**2)
+        if available_pilots:
+            def get_distance(pilot):
+                p_lat = pilot["current_location"]["lat"]
+                p_lon = pilot["current_location"]["lon"]
+                return math.sqrt((p_lat - booking.lat)**2 + (p_lon - booking.lon)**2)
             
-            nearest_drone = min(available_drones, key=get_distance)
-            assigned_drone_id = nearest_drone["drone_id"]
+            nearest_pilot = min(available_pilots, key=get_distance)
+            assigned_pilot_id = nearest_pilot["pilot_id"]
             
-            # 3. Calculate ETA (Rough math: 0.01 deg is ~1.1km. Drone flies 1km/min)
-            dist_deg = get_distance(nearest_drone)
+            dist_deg = get_distance(nearest_pilot)
             eta_mins = max(2, int(dist_deg * 100))
-            initial_status = "in_progress" # Instant dispatch!
+            
+            # 🔥 FIX 1: Set to 'Accepted' so it goes straight to 'My Missions'
+            initial_status = "Accepted" 
 
-            # 4. Lock the drone so nobody else can book it
-            db.drones.update_one(
-                {"drone_id": assigned_drone_id}, 
-                {"$set": {"status": "on_job"}}
+            # Lock the pilot so nobody else can book them
+            db.pilots.update_one(
+                {"pilot_id": assigned_pilot_id}, 
+                {"$set": {
+                    "status": "busy",
+                    "current_job_id": new_booking_id
+                }}
             )
 
     # Save the booking
     booking_document = {
         "booking_id": new_booking_id,
         "customer_uid": user_uid,
-        "pilot_uid": None,
-        "drone_id": assigned_drone_id, # Will be filled if emergency!
+        # 🔥 FIX 2: Ensure pilot_uid is populated instantly for emergencies!
+        "pilot_uid": assigned_pilot_id, 
+        "drone_id": assigned_pilot_id, # Keeping this just in case other parts of your app use it
         "service_type": booking.serviceType,
         "date": str(booking.date), 
         "time": str(booking.time),
@@ -89,7 +92,29 @@ def create_booking(booking: BookingRequest, decoded_token: dict = Depends(verify
     return {
         "booking_id": new_booking_id,
         "status": initial_status,
-        "message": "Emergency Drone Dispatched!" if assigned_drone_id else "Booking pending.",
-        "drone_id": assigned_drone_id,
+        "message": "Emergency Drone Dispatched!" if assigned_pilot_id else "Booking pending.",
+        "pilot_uid": assigned_pilot_id,
         "eta": eta_mins
     }
+
+@router.get("/my-bookings")
+def get_user_bookings(decoded_token: dict = Depends(verify_firebase_token)):
+    """Allows a user to see their bookings and the assigned pilot details."""
+    user_uid = decoded_token.get("uid")
+    
+    # Fetch user's bookings
+    bookings = list(db.bookings.find({"customer_uid": user_uid}, {"_id": 0}))
+
+    # Attach pilot details if a pilot has accepted the job
+    for booking in bookings:
+        if booking.get("pilot_uid"):
+            # Fetch pilot details from the users collection (assuming pilots are also in users_collection)
+            pilot = db.users_collection.find_one(
+                {"firebaseUid": booking["pilot_uid"]}, 
+                {"_id": 0, "name": 1, "phone": 1, "photoURL": 1} # Only grab safe fields!
+            )
+            booking["pilot_details"] = pilot
+        else:
+            booking["pilot_details"] = None
+
+    return {"bookings": bookings}

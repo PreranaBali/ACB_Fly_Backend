@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # 🔥 Import all your routes
-from app.routes import auth_routes, user_routes, bookings_routes, drone_routes, pilot_routes
+from app.routes import auth_routes, user_routes, bookings_routes, pilot_routes
 
 app = FastAPI()
 
@@ -19,6 +19,4 @@ app.include_router(auth_routes.router, prefix="/api/auth")
 app.include_router(user_routes.router, prefix="/api")
 app.include_router(bookings_routes.router)
 
-# 🔥 Add the new Drone and Pilot routers here!
-app.include_router(drone_routes.router)
 app.include_router(pilot_routes.router)
